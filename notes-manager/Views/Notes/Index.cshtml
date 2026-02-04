@@ -1,0 +1,175 @@
+@model IEnumerable<NotesManager.Models.Note>
+
+@{
+    ViewData["Title"] = "My Notes";
+    var sortBy = ViewData["SortBy"]?.ToString() ?? "modified";
+    var ascending = (bool)(ViewData["Ascending"] ?? false);
+    var searchTerm = ViewData["SearchTerm"]?.ToString() ?? "";
+}
+
+<div class="page-header">
+    <h1>My Notes</h1>
+    <a href="@Url.Action("Create")" class="btn btn-primary">+ Create New Note</a>
+</div>
+
+<div class="notes-controls">
+    <div class="search-box">
+        <input type="text" id="searchInput" placeholder="Search notes..." value="@searchTerm" />
+        <button id="clearSearch" class="btn-icon" title="Clear search">✕</button>
+    </div>
+    
+    <div class="sort-controls">
+        <label>Sort by:</label>
+        <select id="sortSelect" class="sort-dropdown">
+            <option value="modified-desc" selected="@(sortBy == "modified" && !ascending)">Recently Modified</option>
+            <option value="modified-asc" selected="@(sortBy == "modified" && ascending)">Oldest Modified</option>
+            <option value="name-asc" selected="@(sortBy == "name" && ascending)">Name (A-Z)</option>
+            <option value="name-desc" selected="@(sortBy == "name" && !ascending)">Name (Z-A)</option>
+            <option value="created-desc" selected="@(sortBy == "created" && !ascending)">Newest Created</option>
+            <option value="created-asc" selected="@(sortBy == "created" && ascending)">Oldest Created</option>
+        </select>
+    </div>
+</div>
+
+@if (Model.Any())
+{
+    <div id="notesList" class="notes-grid">
+        @foreach (var note in Model)
+        {
+            <div class="note-card" data-note-id="@note.NoteId" data-note-name="@note.NoteName.ToLower()">
+                <div class="note-header">
+                    <h3 class="note-name">@note.NoteName</h3>
+                    <div class="note-actions">
+                        <button class="btn-icon rename-btn" data-note-id="@note.NoteId" title="Rename">✏️</button>
+                        <a href="@Url.Action("Edit", new { id = note.NoteId })" class="btn-icon" title="Edit">📝</a>
+                        <a href="@Url.Action("Delete", new { id = note.NoteId })" class="btn-icon delete-btn" title="Delete">🗑️</a>
+                    </div>
+                </div>
+                <div class="note-content">
+                    <p>@(string.IsNullOrEmpty(note.Content) ? "(Empty note)" : note.Content.Substring(0, Math.Min(100, note.Content.Length)) + (note.Content.Length > 100 ? "..." : ""))</p>
+                </div>
+                <div class="note-footer">
+                    <span class="note-date">Modified: @note.LastModified.ToString("MMM dd, yyyy")</span>
+                    <a href="@Url.Action("Details", new { id = note.NoteId })" class="btn-link">View Details →</a>
+                </div>
+            </div>
+        }
+    </div>
+}
+else
+{
+    <div class="empty-state">
+        <p>No notes found.</p>
+        @if (!string.IsNullOrEmpty(searchTerm))
+        {
+            <p>Try a different search term or <a href="@Url.Action("Index")">view all notes</a>.</p>
+        }
+        else
+        {
+            <p><a href="@Url.Action("Create")">Create your first note</a> to get started!</p>
+        }
+    </div>
+}
+
+<!-- Rename Modal -->
+<div id="renameModal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <h2>Rename Note</h2>
+        <form id="renameForm">
+            @Html.AntiForgeryToken()
+            <input type="hidden" id="renameNoteId" />
+            <div class="form-group">
+                <label for="newNoteName">New Name:</label>
+                <input type="text" id="newNoteName" class="form-control" required />
+                <span class="error-message" id="renameError"></span>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" id="cancelRename">Cancel</button>
+                <button type="submit" class="btn btn-primary">Rename</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        // Real-time search
+        const searchInput = document.getElementById('searchInput');
+        const clearSearch = document.getElementById('clearSearch');
+        const noteCards = document.querySelectorAll('.note-card');
+
+        searchInput.addEventListener('input', function() {
+            const searchTerm = this.value.toLowerCase();
+            
+            noteCards.forEach(card => {
+                const noteName = card.getAttribute('data-note-name');
+                if (noteName.includes(searchTerm)) {
+                    card.style.display = 'block';
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+        });
+
+        clearSearch.addEventListener('click', function() {
+            searchInput.value = '';
+            searchInput.dispatchEvent(new Event('input'));
+        });
+
+        // Sort handling
+        const sortSelect = document.getElementById('sortSelect');
+        sortSelect.addEventListener('change', function() {
+            const [sortBy, order] = this.value.split('-');
+            const ascending = order === 'asc';
+            window.location.href = `@Url.Action("Index")?sortBy=${sortBy}&ascending=${ascending}`;
+        });
+
+        // Rename functionality
+        const renameButtons = document.querySelectorAll('.rename-btn');
+        const renameModal = document.getElementById('renameModal');
+        const renameForm = document.getElementById('renameForm');
+        const cancelRename = document.getElementById('cancelRename');
+
+        renameButtons.forEach(btn => {
+            btn.addEventListener('click', function() {
+                const noteId = this.getAttribute('data-note-id');
+                const currentName = this.closest('.note-card').querySelector('.note-name').textContent;
+                
+                document.getElementById('renameNoteId').value = noteId;
+                document.getElementById('newNoteName').value = currentName;
+                renameModal.style.display = 'flex';
+            });
+        });
+
+        cancelRename.addEventListener('click', function() {
+            renameModal.style.display = 'none';
+        });
+
+        renameForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const noteId = document.getElementById('renameNoteId').value;
+            const newName = document.getElementById('newNoteName').value;
+            
+            const formData = new FormData();
+            formData.append('id', noteId);
+            formData.append('newName', newName);
+            
+            const token = document.querySelector('input[name="__RequestVerificationToken"]').value;
+            formData.append('__RequestVerificationToken', token);
+            
+            const response = await fetch('@Url.Action("Rename")', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                location.reload();
+            } else {
+                document.getElementById('renameError').textContent = result.message;
+            }
+        });
+    </script>
+}

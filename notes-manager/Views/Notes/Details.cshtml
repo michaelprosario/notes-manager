@@ -1,0 +1,39 @@
+@model NotesManager.Models.Note
+
+@{
+    ViewData["Title"] = Model.NoteName;
+}
+
+<div class="page-header">
+    <h1>@Model.NoteName</h1>
+    <div class="header-actions">
+        <a asp-action="Edit" asp-route-id="@Model.NoteId" class="btn btn-primary">Edit</a>
+        <a asp-action="Delete" asp-route-id="@Model.NoteId" class="btn btn-danger">Delete</a>
+    </div>
+</div>
+
+<div class="note-details">
+    <div class="note-metadata">
+        <div class="metadata-item">
+            <strong>Created:</strong> @Model.CreatedDate.ToString("MMMM dd, yyyy 'at' h:mm tt")
+        </div>
+        <div class="metadata-item">
+            <strong>Last Modified:</strong> @Model.LastModified.ToString("MMMM dd, yyyy 'at' h:mm tt")
+        </div>
+    </div>
+    
+    <div class="note-content-display">
+        @if (string.IsNullOrWhiteSpace(Model.Content))
+        {
+            <p class="empty-content">(This note is empty)</p>
+        }
+        else
+        {
+            <pre>@Model.Content</pre>
+        }
+    </div>
+</div>
+
+<div class="actions-bar">
+    <a asp-action="Index" class="btn btn-secondary">← Back to Notes</a>
+</div>
