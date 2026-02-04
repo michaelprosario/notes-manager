@@ -1,0 +1,272 @@
+# Notes Manager - Implementation Plan
+
+## Technology Stack
+
+### Backend
+- **Framework**: ASP.NET MVC (Model-View-Controller pattern)
+- **Language**: C#
+- **Database**: SQLite
+- **Architecture**: Traditional MVC with server-side rendering
+
+### Frontend
+- **Markup**: HTML5
+- **Styling**: CSS3
+- **Interactivity**: JavaScript (ES6+)
+- **Approach**: Simple, vanilla JavaScript for enhanced interactivity without heavy frameworks
+
+### Database Storage
+- **Primary Database**: SQLite
+- **File-based storage**: Single `.db` file for portability and ease of deployment
+- **No external dependencies**: SQLite requires no server setup or configuration
+
+---
+
+## Application Architecture
+
+```
+Notes Manager (ASP.NET MVC)
+├── Models/
+│   └── Note.cs
+├── Controllers/
+│   ├── NotesController.cs
+│   └── HomeController.cs
+├── Views/
+│   ├── Notes/
+│   │   ├── Index.html
+│   │   ├── Create.html
+│   │   ├── Edit.html
+│   │   └── View.html
+│   └── Shared/
+│       └── _Layout.html
+├── wwwroot/
+│   ├── css/
+│   │   └── style.css
+│   └── js/
+│       └── app.js
+└── Database/
+    └── notes.db (SQLite)
+```
+
+---
+
+## Database Schema
+
+### Notes Table
+
+```sql
+CREATE TABLE Notes (
+    NoteId TEXT PRIMARY KEY,
+    NoteName TEXT NOT NULL UNIQUE,
+    Content TEXT,
+    CreatedDate DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    LastModified DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**Fields:**
+- `NoteId`: UUID (TEXT) - Unique identifier
+- `NoteName`: TEXT - User-defined note name (UNIQUE to prevent duplicates)
+- `Content`: TEXT - Note body content
+- `CreatedDate`: DATETIME - Timestamp of creation
+- `LastModified`: DATETIME - Timestamp of last modification
+
+**Indexes:**
+```sql
+CREATE INDEX idx_note_name ON Notes(NoteName);
+CREATE INDEX idx_last_modified ON Notes(LastModified DESC);
+```
+
+---
+
+## Core Features Implementation
+
+### 1. Note Creation
+- **Flow**: User → Create View → Form → Controller → Model → SQLite
+- **Validation**: 
+  - Prevent empty note names (client + server)
+  - Check for duplicate names in database
+  - Sanitize special characters for filename compatibility
+- **Response**: Return to notes list or show edit view
+
+### 2. Note Renaming
+- **Flow**: User → Note Settings → Rename Modal → Controller Update → SQLite
+- **Validation**:
+  - Ensure new name is not empty
+  - Check for conflicts with existing notes
+  - Update `LastModified` timestamp
+- **Response**: Update UI and refresh notes list
+
+### 3. Note Browsing & Sorting
+- **Display**: Notes rendered as HTML list/grid in Index view
+- **Sorting Options**:
+  - Alphabetical (A-Z / Z-A)
+  - By creation date (Newest/Oldest)
+  - By last modified (Most recent first)
+- **Pagination**: Consider pagination for large note collections
+
+### 4. Note Search
+- **Implementation**: JavaScript-based real-time search on client-side
+- **Behavior**:
+  - Filter notes as user types in search box
+  - Highlight matching text in results
+  - Case-insensitive search
+- **Fallback**: Server-side search endpoint for full-text search if needed
+
+### 5. Note Editing & Deletion
+- **Edit View**: Load note content into textarea
+- **Save**: POST to controller, update database, return confirmation
+- **Delete**: Confirmation dialog before removal from SQLite
+- **Content Storage**: Store full text content in database for later retrieval
+
+---
+
+## MVC Component Details
+
+### Models (C#)
+```csharp
+public class Note
+{
+    public string NoteId { get; set; }
+    public string NoteName { get; set; }
+    public string Content { get; set; }
+    public DateTime CreatedDate { get; set; }
+    public DateTime LastModified { get; set; }
+}
+```
+
+### Controllers (C#)
+- `NotesController`: Handle CRUD operations
+  - `Index()`: List all notes
+  - `Create()/Create(Note)`: Create new note
+  - `Edit(id)/Edit(Note)`: Edit existing note
+  - `Delete(id)`: Delete note
+  - `Rename(id, newName)`: Rename note
+  - `Search(query)`: Search notes
+
+### Views (HTML/Razor)
+- **Index**: Display notes list with search and sort options
+- **Create**: Form for creating new note with name input
+- **Edit**: Editor for note content with save/cancel buttons
+- **Details**: Read-only view of note content
+
+---
+
+## Frontend Behavior
+
+### HTML Structure
+- Semantic HTML5 markup
+- Form elements with proper labels and validation attributes
+- Accessible navigation and focus management
+
+### CSS Styling
+- Mobile-first responsive design
+- Clean, minimal UI following design system principles
+- Consistent spacing, typography, and color scheme
+- Visual feedback for interactive elements (hover, focus, active states)
+- Animations for smooth transitions
+
+### JavaScript Interactivity
+- Real-time search filtering
+- Form validation before submission
+- Confirmation dialogs for destructive actions (delete, rename)
+- Dynamic updates without full page reload (AJAX for search/filter)
+- Keyboard shortcuts for common actions (Ctrl+N for new note, Ctrl+S for save)
+
+---
+
+## SQLite Integration
+
+### Connection & Setup
+- **Connection String**: `Data Source=notes.db`
+- **Entity Framework or ADO.NET**: Use for database access layer
+- **Migrations**: Version control database schema changes
+
+### Data Access Layer
+- Create repository pattern or EF DbContext for database operations
+- Implement transaction support for multi-step operations
+- Use parameterized queries to prevent SQL injection
+
+### Performance Considerations
+- Create indexes on frequently queried columns (NoteName, LastModified)
+- Use PRAGMA settings for optimal performance:
+  ```sql
+  PRAGMA journal_mode = WAL;
+  PRAGMA synchronous = NORMAL;
+  ```
+- Implement query timeouts to prevent long-running operations
+
+---
+
+## Development Workflow
+
+### Phase 1: Foundation
+1. Set up ASP.NET MVC project structure
+2. Create SQLite database with Notes table
+3. Build basic data access layer
+
+### Phase 2: Core Features
+1. Implement Note model and controller actions
+2. Create views for listing, creating, and editing notes
+3. Add database CRUD operations
+
+### Phase 3: User Interface
+1. Build HTML views with semantic structure
+2. Style with CSS for responsive design
+3. Add JavaScript for client-side interactivity
+
+### Phase 4: Enhancement & Testing
+1. Implement search and sorting
+2. Add validation on client and server
+3. Test across browsers and devices
+4. Performance optimization
+
+---
+
+## Deployment
+
+### Prerequisites
+- .NET runtime environment
+- SQLite (included with many platforms, no separate installation needed)
+
+### Deployment Steps
+1. Publish ASP.NET MVC application
+2. Include SQLite database file in deployment package
+3. Configure connection string for target environment
+4. Run application on web server (IIS, Kestrel, etc.)
+
+### Database Backup
+- SQLite database files can be backed up by copying the `.db` file
+- Implement regular backup strategy
+- Consider versioning for database migrations
+
+---
+
+## Security Considerations
+
+- **Input Validation**: Sanitize all user inputs (note names, content)
+- **SQL Injection**: Use parameterized queries for all database operations
+- **XSS Protection**: Encode HTML output in views
+- **CSRF Protection**: Use ASP.NET MVC anti-forgery tokens on forms
+- **Character Restrictions**: Validate note names to exclude invalid filesystem characters
+- **Error Handling**: Don't expose database errors to users; log for debugging
+
+---
+
+## Testing Strategy
+
+- **Unit Tests**: Test controller actions and business logic
+- **Integration Tests**: Test database operations and data access layer
+- **Functional Tests**: Test full user workflows (create, rename, search, delete)
+- **UI Tests**: Test form validation, error messages, and user interactions
+- **Performance Tests**: Verify search and sorting performance with large datasets
+
+---
+
+## Future Enhancements
+
+- User authentication and authorization
+- Cloud sync and backup capabilities
+- Rich text editing (Markdown support)
+- Tags and categories for better organization
+- Note sharing functionality
+- Version history for tracking changes
