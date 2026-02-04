@@ -1,0 +1,1730 @@
+# Notes Manager - Implementation Code
+
+This document contains the core implementation code for the Notes Manager application based on the specifications, plan, and tasks.
+
+---
+
+## 1. Database Schema (SQLite)
+
+### CreateDatabase.sql
+```sql
+-- Create Notes table
+CREATE TABLE IF NOT EXISTS Notes (
+    NoteId TEXT PRIMARY KEY,
+    NoteName TEXT NOT NULL UNIQUE,
+    Content TEXT,
+    CreatedDate DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    LastModified DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for performance
+CREATE INDEX IF NOT EXISTS idx_note_name ON Notes(NoteName);
+CREATE INDEX IF NOT EXISTS idx_last_modified ON Notes(LastModified DESC);
+
+-- Set SQLite pragmas for optimal performance
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA foreign_keys = ON;
+```
+
+---
+
+## 2. Models
+
+### Note.cs
+```csharp
+using System;
+using System.ComponentModel.DataAnnotations;
+
+namespace NotesManager.Models
+{
+    public class Note
+    {
+        [Key]
+        public string NoteId { get; set; } = Guid.NewGuid().ToString();
+
+        [Required(ErrorMessage = "Note name is required")]
+        [StringLength(200, MinimumLength = 1, ErrorMessage = "Note name must be between 1 and 200 characters")]
+        [RegularExpression(@"^[^<>:""/\\|?*]+$", ErrorMessage = "Note name contains invalid characters")]
+        public string NoteName { get; set; }
+
+        [MaxLength(1000000, ErrorMessage = "Note content is too large")]
+        public string Content { get; set; }
+
+        [Required]
+        public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
+
+        [Required]
+        public DateTime LastModified { get; set; } = DateTime.UtcNow;
+    }
+}
+```
+
+---
+
+## 3. Data Access Layer
+
+### NotesDbContext.cs
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+namespace NotesManager.Data
+{
+    public class NotesDbContext : DbContext
+    {
+        public NotesDbContext(DbContextOptions<NotesDbContext> options)
+            : base(options)
+        {
+        }
+
+        public DbSet<Note> Notes { get; set; }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            base.OnModelCreating(modelBuilder);
+
+            // Configure unique constraint on NoteName
+            modelBuilder.Entity<Note>()
+                .HasIndex(n => n.NoteName)
+                .IsUnique();
+
+            // Configure index on LastModified for sorting
+            modelBuilder.Entity<Note>()
+                .HasIndex(n => n.LastModified);
+        }
+    }
+}
+```
+
+### INotesRepository.cs
+```csharp
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using NotesManager.Models;
+
+namespace NotesManager.Data
+{
+    public interface INotesRepository
+    {
+        Task<IEnumerable<Note>> GetAllNotesAsync();
+        Task<Note> GetNoteByIdAsync(string noteId);
+        Task<Note> GetNoteByNameAsync(string noteName);
+        Task<bool> NoteNameExistsAsync(string noteName, string excludeNoteId = null);
+        Task<Note> CreateNoteAsync(Note note);
+        Task<Note> UpdateNoteAsync(Note note);
+        Task<bool> DeleteNoteAsync(string noteId);
+        Task<bool> RenameNoteAsync(string noteId, string newName);
+        Task<IEnumerable<Note>> SearchNotesAsync(string searchTerm);
+        Task<IEnumerable<Note>> GetNotesSortedAsync(string sortBy, bool ascending = true);
+    }
+}
+```
+
+### NotesRepository.cs
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using NotesManager.Models;
+
+namespace NotesManager.Data
+{
+    public class NotesRepository : INotesRepository
+    {
+        private readonly NotesDbContext _context;
+
+        public NotesRepository(NotesDbContext context)
+        {
+            _context = context;
+        }
+
+        public async Task<IEnumerable<Note>> GetAllNotesAsync()
+        {
+            return await _context.Notes
+                .OrderByDescending(n => n.LastModified)
+                .ToListAsync();
+        }
+
+        public async Task<Note> GetNoteByIdAsync(string noteId)
+        {
+            return await _context.Notes.FindAsync(noteId);
+        }
+
+        public async Task<Note> GetNoteByNameAsync(string noteName)
+        {
+            return await _context.Notes
+                .FirstOrDefaultAsync(n => n.NoteName == noteName);
+        }
+
+        public async Task<bool> NoteNameExistsAsync(string noteName, string excludeNoteId = null)
+        {
+            var query = _context.Notes.Where(n => n.NoteName == noteName);
+            
+            if (!string.IsNullOrEmpty(excludeNoteId))
+            {
+                query = query.Where(n => n.NoteId != excludeNoteId);
+            }
+            
+            return await query.AnyAsync();
+        }
+
+        public async Task<Note> CreateNoteAsync(Note note)
+        {
+            note.NoteId = Guid.NewGuid().ToString();
+            note.CreatedDate = DateTime.UtcNow;
+            note.LastModified = DateTime.UtcNow;
+            
+            _context.Notes.Add(note);
+            await _context.SaveChangesAsync();
+            
+            return note;
+        }
+
+        public async Task<Note> UpdateNoteAsync(Note note)
+        {
+            note.LastModified = DateTime.UtcNow;
+            
+            _context.Entry(note).State = EntityState.Modified;
+            await _context.SaveChangesAsync();
+            
+            return note;
+        }
+
+        public async Task<bool> DeleteNoteAsync(string noteId)
+        {
+            var note = await _context.Notes.FindAsync(noteId);
+            if (note == null)
+            {
+                return false;
+            }
+            
+            _context.Notes.Remove(note);
+            await _context.SaveChangesAsync();
+            
+            return true;
+        }
+
+        public async Task<bool> RenameNoteAsync(string noteId, string newName)
+        {
+            var note = await _context.Notes.FindAsync(noteId);
+            if (note == null)
+            {
+                return false;
+            }
+            
+            note.NoteName = newName;
+            note.LastModified = DateTime.UtcNow;
+            
+            await _context.SaveChangesAsync();
+            
+            return true;
+        }
+
+        public async Task<IEnumerable<Note>> SearchNotesAsync(string searchTerm)
+        {
+            if (string.IsNullOrWhiteSpace(searchTerm))
+            {
+                return await GetAllNotesAsync();
+            }
+            
+            searchTerm = searchTerm.ToLower();
+            
+            return await _context.Notes
+                .Where(n => n.NoteName.ToLower().Contains(searchTerm) || 
+                           n.Content.ToLower().Contains(searchTerm))
+                .OrderByDescending(n => n.LastModified)
+                .ToListAsync();
+        }
+
+        public async Task<IEnumerable<Note>> GetNotesSortedAsync(string sortBy, bool ascending = true)
+        {
+            IQueryable<Note> query = _context.Notes;
+            
+            query = sortBy.ToLower() switch
+            {
+                "name" => ascending ? query.OrderBy(n => n.NoteName) : query.OrderByDescending(n => n.NoteName),
+                "created" => ascending ? query.OrderBy(n => n.CreatedDate) : query.OrderByDescending(n => n.CreatedDate),
+                "modified" => ascending ? query.OrderBy(n => n.LastModified) : query.OrderByDescending(n => n.LastModified),
+                _ => query.OrderByDescending(n => n.LastModified)
+            };
+            
+            return await query.ToListAsync();
+        }
+    }
+}
+```
+
+---
+
+## 4. Controllers
+
+### NotesController.cs
+```csharp
+using System;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Mvc;
+using NotesManager.Data;
+using NotesManager.Models;
+
+namespace NotesManager.Controllers
+{
+    public class NotesController : Controller
+    {
+        private readonly INotesRepository _repository;
+
+        public NotesController(INotesRepository repository)
+        {
+            _repository = repository;
+        }
+
+        // GET: Notes
+        public async Task<IActionResult> Index(string sortBy = "modified", bool ascending = false, string searchTerm = "")
+        {
+            IEnumerable<Note> notes;
+            
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                notes = await _repository.SearchNotesAsync(searchTerm);
+                ViewData["SearchTerm"] = searchTerm;
+            }
+            else
+            {
+                notes = await _repository.GetNotesSortedAsync(sortBy, ascending);
+            }
+            
+            ViewData["SortBy"] = sortBy;
+            ViewData["Ascending"] = ascending;
+            
+            return View(notes);
+        }
+
+        // GET: Notes/Details/5
+        public async Task<IActionResult> Details(string id)
+        {
+            if (string.IsNullOrEmpty(id))
+            {
+                return NotFound();
+            }
+
+            var note = await _repository.GetNoteByIdAsync(id);
+            if (note == null)
+            {
+                return NotFound();
+            }
+
+            return View(note);
+        }
+
+        // GET: Notes/Create
+        public IActionResult Create()
+        {
+            return View();
+        }
+
+        // POST: Notes/Create
+        [HttpPost]
+        [ValidateAntiForgeryToken]
+        public async Task<IActionResult> Create([Bind("NoteName,Content")] Note note)
+        {
+            if (ModelState.IsValid)
+            {
+                // Check if note name already exists
+                if (await _repository.NoteNameExistsAsync(note.NoteName))
+                {
+                    ModelState.AddModelError("NoteName", "A note with this name already exists.");
+                    return View(note);
+                }
+
+                await _repository.CreateNoteAsync(note);
+                TempData["SuccessMessage"] = $"Note '{note.NoteName}' created successfully.";
+                return RedirectToAction(nameof(Index));
+            }
+            
+            return View(note);
+        }
+
+        // GET: Notes/Edit/5
+        public async Task<IActionResult> Edit(string id)
+        {
+            if (string.IsNullOrEmpty(id))
+            {
+                return NotFound();
+            }
+
+            var note = await _repository.GetNoteByIdAsync(id);
+            if (note == null)
+            {
+                return NotFound();
+            }
+            
+            return View(note);
+        }
+
+        // POST: Notes/Edit/5
+        [HttpPost]
+        [ValidateAntiForgeryToken]
+        public async Task<IActionResult> Edit(string id, [Bind("NoteId,NoteName,Content,CreatedDate")] Note note)
+        {
+            if (id != note.NoteId)
+            {
+                return NotFound();
+            }
+
+            if (ModelState.IsValid)
+            {
+                // Check if new name conflicts with existing note
+                if (await _repository.NoteNameExistsAsync(note.NoteName, note.NoteId))
+                {
+                    ModelState.AddModelError("NoteName", "A note with this name already exists.");
+                    return View(note);
+                }
+
+                await _repository.UpdateNoteAsync(note);
+                TempData["SuccessMessage"] = $"Note '{note.NoteName}' updated successfully.";
+                return RedirectToAction(nameof(Index));
+            }
+            
+            return View(note);
+        }
+
+        // GET: Notes/Delete/5
+        public async Task<IActionResult> Delete(string id)
+        {
+            if (string.IsNullOrEmpty(id))
+            {
+                return NotFound();
+            }
+
+            var note = await _repository.GetNoteByIdAsync(id);
+            if (note == null)
+            {
+                return NotFound();
+            }
+
+            return View(note);
+        }
+
+        // POST: Notes/Delete/5
+        [HttpPost, ActionName("Delete")]
+        [ValidateAntiForgeryToken]
+        public async Task<IActionResult> DeleteConfirmed(string id)
+        {
+            var note = await _repository.GetNoteByIdAsync(id);
+            var noteName = note?.NoteName ?? "Unknown";
+            
+            if (await _repository.DeleteNoteAsync(id))
+            {
+                TempData["SuccessMessage"] = $"Note '{noteName}' deleted successfully.";
+            }
+            else
+            {
+                TempData["ErrorMessage"] = "Failed to delete note.";
+            }
+            
+            return RedirectToAction(nameof(Index));
+        }
+
+        // POST: Notes/Rename
+        [HttpPost]
+        [ValidateAntiForgeryToken]
+        public async Task<IActionResult> Rename(string id, string newName)
+        {
+            if (string.IsNullOrWhiteSpace(newName))
+            {
+                return Json(new { success = false, message = "Note name cannot be empty." });
+            }
+
+            // Check if new name already exists
+            if (await _repository.NoteNameExistsAsync(newName, id))
+            {
+                return Json(new { success = false, message = "A note with this name already exists." });
+            }
+
+            if (await _repository.RenameNoteAsync(id, newName))
+            {
+                return Json(new { success = true, message = $"Note renamed to '{newName}' successfully." });
+            }
+            
+            return Json(new { success = false, message = "Failed to rename note." });
+        }
+
+        // GET: Notes/Search
+        public async Task<IActionResult> Search(string term)
+        {
+            var notes = await _repository.SearchNotesAsync(term);
+            return PartialView("_NotesList", notes);
+        }
+    }
+}
+```
+
+---
+
+## 5. Views
+
+### _Layout.cshtml
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@ViewData["Title"] - Notes Manager</title>
+    <link rel="stylesheet" href="~/css/style.css" />
+</head>
+<body>
+    <header>
+        <nav class="navbar">
+            <div class="container">
+                <a class="navbar-brand" href="@Url.Action("Index", "Notes")">📝 Notes Manager</a>
+                <div class="navbar-links">
+                    <a href="@Url.Action("Index", "Notes")">All Notes</a>
+                    <a href="@Url.Action("Create", "Notes")" class="btn-primary">+ New Note</a>
+                </div>
+            </div>
+        </nav>
+    </header>
+    
+    <main class="container">
+        @if (TempData["SuccessMessage"] != null)
+        {
+            <div class="alert alert-success" role="alert">
+                @TempData["SuccessMessage"]
+            </div>
+        }
+        
+        @if (TempData["ErrorMessage"] != null)
+        {
+            <div class="alert alert-error" role="alert">
+                @TempData["ErrorMessage"]
+            </div>
+        }
+        
+        @RenderBody()
+    </main>
+    
+    <footer>
+        <div class="container">
+            <p>&copy; 2026 Notes Manager. All rights reserved.</p>
+        </div>
+    </footer>
+    
+    <script src="~/js/app.js"></script>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>
+```
+
+### Index.cshtml
+```html
+@model IEnumerable<NotesManager.Models.Note>
+
+@{
+    ViewData["Title"] = "My Notes";
+    var sortBy = ViewData["SortBy"]?.ToString() ?? "modified";
+    var ascending = (bool)(ViewData["Ascending"] ?? false);
+    var searchTerm = ViewData["SearchTerm"]?.ToString() ?? "";
+}
+
+<div class="page-header">
+    <h1>My Notes</h1>
+    <a href="@Url.Action("Create")" class="btn btn-primary">+ Create New Note</a>
+</div>
+
+<div class="notes-controls">
+    <div class="search-box">
+        <input type="text" id="searchInput" placeholder="Search notes..." value="@searchTerm" />
+        <button id="clearSearch" class="btn-icon" title="Clear search">✕</button>
+    </div>
+    
+    <div class="sort-controls">
+        <label>Sort by:</label>
+        <select id="sortSelect" class="sort-dropdown">
+            <option value="modified-desc" selected="@(sortBy == "modified" && !ascending)">Recently Modified</option>
+            <option value="modified-asc" selected="@(sortBy == "modified" && ascending)">Oldest Modified</option>
+            <option value="name-asc" selected="@(sortBy == "name" && ascending)">Name (A-Z)</option>
+            <option value="name-desc" selected="@(sortBy == "name" && !ascending)">Name (Z-A)</option>
+            <option value="created-desc" selected="@(sortBy == "created" && !ascending)">Newest Created</option>
+            <option value="created-asc" selected="@(sortBy == "created" && ascending)">Oldest Created</option>
+        </select>
+    </div>
+</div>
+
+@if (Model.Any())
+{
+    <div id="notesList" class="notes-grid">
+        @foreach (var note in Model)
+        {
+            <div class="note-card" data-note-id="@note.NoteId" data-note-name="@note.NoteName.ToLower()">
+                <div class="note-header">
+                    <h3 class="note-name">@note.NoteName</h3>
+                    <div class="note-actions">
+                        <button class="btn-icon rename-btn" data-note-id="@note.NoteId" title="Rename">✏️</button>
+                        <a href="@Url.Action("Edit", new { id = note.NoteId })" class="btn-icon" title="Edit">📝</a>
+                        <a href="@Url.Action("Delete", new { id = note.NoteId })" class="btn-icon delete-btn" title="Delete">🗑️</a>
+                    </div>
+                </div>
+                <div class="note-content">
+                    <p>@(string.IsNullOrEmpty(note.Content) ? "(Empty note)" : note.Content.Substring(0, Math.Min(100, note.Content.Length)) + (note.Content.Length > 100 ? "..." : ""))</p>
+                </div>
+                <div class="note-footer">
+                    <span class="note-date">Modified: @note.LastModified.ToString("MMM dd, yyyy")</span>
+                    <a href="@Url.Action("Details", new { id = note.NoteId })" class="btn-link">View Details →</a>
+                </div>
+            </div>
+        }
+    </div>
+}
+else
+{
+    <div class="empty-state">
+        <p>No notes found.</p>
+        @if (!string.IsNullOrEmpty(searchTerm))
+        {
+            <p>Try a different search term or <a href="@Url.Action("Index")">view all notes</a>.</p>
+        }
+        else
+        {
+            <p><a href="@Url.Action("Create")">Create your first note</a> to get started!</p>
+        }
+    </div>
+}
+
+<!-- Rename Modal -->
+<div id="renameModal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <h2>Rename Note</h2>
+        <form id="renameForm">
+            <input type="hidden" id="renameNoteId" />
+            <div class="form-group">
+                <label for="newNoteName">New Name:</label>
+                <input type="text" id="newNoteName" class="form-control" required />
+                <span class="error-message" id="renameError"></span>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" id="cancelRename">Cancel</button>
+                <button type="submit" class="btn btn-primary">Rename</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        // Real-time search
+        const searchInput = document.getElementById('searchInput');
+        const clearSearch = document.getElementById('clearSearch');
+        const noteCards = document.querySelectorAll('.note-card');
+
+        searchInput.addEventListener('input', function() {
+            const searchTerm = this.value.toLowerCase();
+            
+            noteCards.forEach(card => {
+                const noteName = card.getAttribute('data-note-name');
+                if (noteName.includes(searchTerm)) {
+                    card.style.display = 'block';
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+        });
+
+        clearSearch.addEventListener('click', function() {
+            searchInput.value = '';
+            searchInput.dispatchEvent(new Event('input'));
+        });
+
+        // Sort handling
+        const sortSelect = document.getElementById('sortSelect');
+        sortSelect.addEventListener('change', function() {
+            const [sortBy, order] = this.value.split('-');
+            const ascending = order === 'asc';
+            window.location.href = `@Url.Action("Index")?sortBy=${sortBy}&ascending=${ascending}`;
+        });
+
+        // Rename functionality
+        const renameButtons = document.querySelectorAll('.rename-btn');
+        const renameModal = document.getElementById('renameModal');
+        const renameForm = document.getElementById('renameForm');
+        const cancelRename = document.getElementById('cancelRename');
+
+        renameButtons.forEach(btn => {
+            btn.addEventListener('click', function() {
+                const noteId = this.getAttribute('data-note-id');
+                const currentName = this.closest('.note-card').querySelector('.note-name').textContent;
+                
+                document.getElementById('renameNoteId').value = noteId;
+                document.getElementById('newNoteName').value = currentName;
+                renameModal.style.display = 'flex';
+            });
+        });
+
+        cancelRename.addEventListener('click', function() {
+            renameModal.style.display = 'none';
+        });
+
+        renameForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const noteId = document.getElementById('renameNoteId').value;
+            const newName = document.getElementById('newNoteName').value;
+            
+            const formData = new FormData();
+            formData.append('id', noteId);
+            formData.append('newName', newName);
+            
+            const response = await fetch('@Url.Action("Rename")', {
+                method: 'POST',
+                body: formData,
+                headers: {
+                    'RequestVerificationToken': document.querySelector('input[name="__RequestVerificationToken"]').value
+                }
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                location.reload();
+            } else {
+                document.getElementById('renameError').textContent = result.message;
+            }
+        });
+    </script>
+}
+```
+
+### Create.cshtml
+```html
+@model NotesManager.Models.Note
+
+@{
+    ViewData["Title"] = "Create Note";
+}
+
+<div class="page-header">
+    <h1>Create New Note</h1>
+</div>
+
+<div class="form-container">
+    <form asp-action="Create" method="post">
+        @Html.AntiForgeryToken()
+        
+        <div class="form-group">
+            <label asp-for="NoteName" class="form-label">Note Name</label>
+            <input asp-for="NoteName" class="form-control" placeholder="Enter note name" autofocus />
+            <span asp-validation-for="NoteName" class="error-message"></span>
+        </div>
+        
+        <div class="form-group">
+            <label asp-for="Content" class="form-label">Content</label>
+            <textarea asp-for="Content" class="form-control" rows="15" placeholder="Enter your notes here..."></textarea>
+            <span asp-validation-for="Content" class="error-message"></span>
+        </div>
+        
+        <div class="form-actions">
+            <a asp-action="Index" class="btn btn-secondary">Cancel</a>
+            <button type="submit" class="btn btn-primary">Create Note</button>
+        </div>
+    </form>
+</div>
+
+@section Scripts {
+    @{await Html.RenderPartialAsync("_ValidationScriptsPartial");}
+    
+    <script>
+        // Keyboard shortcut: Ctrl+S to save
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.key === 's') {
+                e.preventDefault();
+                document.querySelector('form').submit();
+            }
+        });
+        
+        // Warn on unsaved changes
+        let formChanged = false;
+        document.querySelectorAll('input, textarea').forEach(el => {
+            el.addEventListener('input', () => formChanged = true);
+        });
+        
+        window.addEventListener('beforeunload', function(e) {
+            if (formChanged) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
+        
+        document.querySelector('form').addEventListener('submit', () => formChanged = false);
+    </script>
+}
+```
+
+### Edit.cshtml
+```html
+@model NotesManager.Models.Note
+
+@{
+    ViewData["Title"] = "Edit Note";
+}
+
+<div class="page-header">
+    <h1>Edit Note</h1>
+</div>
+
+<div class="form-container">
+    <form asp-action="Edit" method="post">
+        @Html.AntiForgeryToken()
+        <input type="hidden" asp-for="NoteId" />
+        <input type="hidden" asp-for="CreatedDate" />
+        
+        <div class="form-group">
+            <label asp-for="NoteName" class="form-label">Note Name</label>
+            <input asp-for="NoteName" class="form-control" />
+            <span asp-validation-for="NoteName" class="error-message"></span>
+        </div>
+        
+        <div class="form-group">
+            <label asp-for="Content" class="form-label">Content</label>
+            <textarea asp-for="Content" class="form-control" rows="15"></textarea>
+            <span asp-validation-for="Content" class="error-message"></span>
+        </div>
+        
+        <div class="form-actions">
+            <a asp-action="Index" class="btn btn-secondary">Cancel</a>
+            <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+    </form>
+</div>
+
+@section Scripts {
+    @{await Html.RenderPartialAsync("_ValidationScriptsPartial");}
+    
+    <script>
+        // Keyboard shortcut: Ctrl+S to save
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.key === 's') {
+                e.preventDefault();
+                document.querySelector('form').submit();
+            }
+        });
+        
+        // Warn on unsaved changes
+        let formChanged = false;
+        document.querySelectorAll('input, textarea').forEach(el => {
+            el.addEventListener('input', () => formChanged = true);
+        });
+        
+        window.addEventListener('beforeunload', function(e) {
+            if (formChanged) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
+        
+        document.querySelector('form').addEventListener('submit', () => formChanged = false);
+    </script>
+}
+```
+
+### Details.cshtml
+```html
+@model NotesManager.Models.Note
+
+@{
+    ViewData["Title"] = Model.NoteName;
+}
+
+<div class="page-header">
+    <h1>@Model.NoteName</h1>
+    <div class="header-actions">
+        <a asp-action="Edit" asp-route-id="@Model.NoteId" class="btn btn-primary">Edit</a>
+        <a asp-action="Delete" asp-route-id="@Model.NoteId" class="btn btn-danger">Delete</a>
+    </div>
+</div>
+
+<div class="note-details">
+    <div class="note-metadata">
+        <div class="metadata-item">
+            <strong>Created:</strong> @Model.CreatedDate.ToString("MMMM dd, yyyy 'at' h:mm tt")
+        </div>
+        <div class="metadata-item">
+            <strong>Last Modified:</strong> @Model.LastModified.ToString("MMMM dd, yyyy 'at' h:mm tt")
+        </div>
+    </div>
+    
+    <div class="note-content-display">
+        @if (string.IsNullOrWhiteSpace(Model.Content))
+        {
+            <p class="empty-content">(This note is empty)</p>
+        }
+        else
+        {
+            <pre>@Model.Content</pre>
+        }
+    </div>
+</div>
+
+<div class="actions-bar">
+    <a asp-action="Index" class="btn btn-secondary">← Back to Notes</a>
+</div>
+```
+
+### Delete.cshtml
+```html
+@model NotesManager.Models.Note
+
+@{
+    ViewData["Title"] = "Delete Note";
+}
+
+<div class="page-header">
+    <h1>Delete Note</h1>
+</div>
+
+<div class="confirmation-container">
+    <div class="alert alert-warning">
+        <h3>⚠️ Are you sure you want to delete this note?</h3>
+        <p>This action cannot be undone.</p>
+    </div>
+    
+    <div class="note-preview">
+        <h4>@Model.NoteName</h4>
+        <p class="note-meta">Created: @Model.CreatedDate.ToString("MMM dd, yyyy")</p>
+        @if (!string.IsNullOrWhiteSpace(Model.Content))
+        {
+            <div class="content-preview">
+                @Model.Content.Substring(0, Math.Min(200, Model.Content.Length))@(Model.Content.Length > 200 ? "..." : "")
+            </div>
+        }
+    </div>
+    
+    <form asp-action="Delete" method="post">
+        @Html.AntiForgeryToken()
+        <input type="hidden" asp-for="NoteId" />
+        <div class="form-actions">
+            <a asp-action="Index" class="btn btn-secondary">Cancel</a>
+            <button type="submit" class="btn btn-danger">Delete Note</button>
+        </div>
+    </form>
+</div>
+```
+
+---
+
+## 6. CSS Stylesheet
+
+### style.css
+```css
+/* Reset and Base Styles */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    --primary-color: #007bff;
+    --secondary-color: #6c757d;
+    --success-color: #28a745;
+    --danger-color: #dc3545;
+    --warning-color: #ffc107;
+    --light-bg: #f8f9fa;
+    --dark-text: #212529;
+    --border-color: #dee2e6;
+    --shadow: 0 2px 4px rgba(0,0,0,0.1);
+    --shadow-hover: 0 4px 8px rgba(0,0,0,0.15);
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.6;
+    color: var(--dark-text);
+    background-color: var(--light-bg);
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 20px;
+}
+
+/* Header & Navigation */
+.navbar {
+    background-color: white;
+    box-shadow: var(--shadow);
+    padding: 1rem 0;
+    margin-bottom: 2rem;
+}
+
+.navbar .container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.navbar-brand {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: var(--primary-color);
+    text-decoration: none;
+}
+
+.navbar-links {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+}
+
+.navbar-links a {
+    text-decoration: none;
+    color: var(--dark-text);
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+}
+
+.navbar-links a:hover {
+    background-color: var(--light-bg);
+}
+
+/* Page Header */
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+}
+
+.page-header h1 {
+    font-size: 2rem;
+    color: var(--dark-text);
+}
+
+/* Buttons */
+.btn {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: 4px;
+    font-size: 1rem;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.2s;
+}
+
+.btn-primary {
+    background-color: var(--primary-color);
+    color: white;
+}
+
+.btn-primary:hover {
+    background-color: #0056b3;
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-hover);
+}
+
+.btn-secondary {
+    background-color: var(--secondary-color);
+    color: white;
+}
+
+.btn-secondary:hover {
+    background-color: #545b62;
+}
+
+.btn-danger {
+    background-color: var(--danger-color);
+    color: white;
+}
+
+.btn-danger:hover {
+    background-color: #c82333;
+}
+
+.btn-icon {
+    background: none;
+    border: none;
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 0.25rem;
+    transition: transform 0.2s;
+}
+
+.btn-icon:hover {
+    transform: scale(1.2);
+}
+
+/* Notes Controls */
+.notes-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.search-box {
+    display: flex;
+    align-items: center;
+    background: white;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.5rem;
+    flex: 1;
+    min-width: 250px;
+}
+
+.search-box input {
+    border: none;
+    outline: none;
+    flex: 1;
+    padding: 0.25rem;
+    font-size: 1rem;
+}
+
+.sort-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.sort-dropdown {
+    padding: 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: white;
+    font-size: 1rem;
+}
+
+/* Notes Grid */
+.notes-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.note-card {
+    background: white;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1.5rem;
+    box-shadow: var(--shadow);
+    transition: all 0.2s;
+}
+
+.note-card:hover {
+    box-shadow: var(--shadow-hover);
+    transform: translateY(-2px);
+}
+
+.note-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 1rem;
+}
+
+.note-name {
+    font-size: 1.25rem;
+    color: var(--dark-text);
+    margin: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.note-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.note-content {
+    margin-bottom: 1rem;
+    color: var(--secondary-color);
+    min-height: 60px;
+}
+
+.note-content p {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+}
+
+.note-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.note-date {
+    font-size: 0.875rem;
+    color: var(--secondary-color);
+}
+
+.btn-link {
+    color: var(--primary-color);
+    text-decoration: none;
+    font-size: 0.875rem;
+}
+
+.btn-link:hover {
+    text-decoration: underline;
+}
+
+/* Empty State */
+.empty-state {
+    text-align: center;
+    padding: 4rem 2rem;
+    background: white;
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+}
+
+.empty-state p {
+    margin: 0.5rem 0;
+    color: var(--secondary-color);
+}
+
+/* Forms */
+.form-container {
+    background: white;
+    padding: 2rem;
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    max-width: 800px;
+}
+
+.form-group {
+    margin-bottom: 1.5rem;
+}
+
+.form-label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+    color: var(--dark-text);
+}
+
+.form-control {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 1rem;
+    font-family: inherit;
+}
+
+.form-control:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(0,123,255,0.1);
+}
+
+textarea.form-control {
+    resize: vertical;
+    min-height: 200px;
+}
+
+.error-message {
+    display: block;
+    color: var(--danger-color);
+    font-size: 0.875rem;
+    margin-top: 0.25rem;
+}
+
+.form-actions {
+    display: flex;
+    gap: 1rem;
+    justify-content: flex-end;
+    margin-top: 2rem;
+}
+
+/* Alerts */
+.alert {
+    padding: 1rem;
+    margin-bottom: 1rem;
+    border-radius: 4px;
+    border: 1px solid transparent;
+}
+
+.alert-success {
+    background-color: #d4edda;
+    border-color: #c3e6cb;
+    color: #155724;
+}
+
+.alert-error {
+    background-color: #f8d7da;
+    border-color: #f5c6cb;
+    color: #721c24;
+}
+
+.alert-warning {
+    background-color: #fff3cd;
+    border-color: #ffeaa7;
+    color: #856404;
+}
+
+/* Modal */
+.modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0,0,0,0.5);
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal-content {
+    background: white;
+    padding: 2rem;
+    border-radius: 8px;
+    max-width: 500px;
+    width: 90%;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+
+.modal-content h2 {
+    margin-bottom: 1.5rem;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 1rem;
+    justify-content: flex-end;
+    margin-top: 1.5rem;
+}
+
+/* Note Details */
+.note-details {
+    background: white;
+    padding: 2rem;
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+}
+
+.note-metadata {
+    display: flex;
+    gap: 2rem;
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.metadata-item {
+    color: var(--secondary-color);
+}
+
+.note-content-display pre {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: inherit;
+    margin: 0;
+}
+
+.empty-content {
+    color: var(--secondary-color);
+    font-style: italic;
+}
+
+.actions-bar {
+    margin-top: 2rem;
+}
+
+/* Delete Confirmation */
+.confirmation-container {
+    max-width: 600px;
+}
+
+.note-preview {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin: 1.5rem 0;
+    border: 1px solid var(--border-color);
+}
+
+.note-preview h4 {
+    margin-bottom: 0.5rem;
+}
+
+.note-meta {
+    font-size: 0.875rem;
+    color: var(--secondary-color);
+    margin-bottom: 1rem;
+}
+
+.content-preview {
+    padding: 1rem;
+    background: var(--light-bg);
+    border-radius: 4px;
+    color: var(--secondary-color);
+}
+
+/* Footer */
+footer {
+    margin-top: 4rem;
+    padding: 2rem 0;
+    text-align: center;
+    color: var(--secondary-color);
+    border-top: 1px solid var(--border-color);
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .page-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+    }
+    
+    .notes-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .notes-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .navbar .container {
+        flex-direction: column;
+        gap: 1rem;
+    }
+    
+    .note-metadata {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+}
+
+/* Accessibility */
+:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation: none !important;
+        transition: none !important;
+    }
+}
+```
+
+---
+
+## 7. JavaScript Application
+
+### app.js
+```javascript
+// Notes Manager - Client-side JavaScript
+
+// Toast notifications
+function showToast(message, type = 'success') {
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    toast.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 1rem 1.5rem;
+        background: ${type === 'success' ? '#28a745' : '#dc3545'};
+        color: white;
+        border-radius: 4px;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        z-index: 9999;
+        animation: slideIn 0.3s ease-out;
+    `;
+    
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.animation = 'slideOut 0.3s ease-out';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+// Auto-hide alerts after 5 seconds
+document.addEventListener('DOMContentLoaded', function() {
+    const alerts = document.querySelectorAll('.alert');
+    alerts.forEach(alert => {
+        setTimeout(() => {
+            alert.style.transition = 'opacity 0.3s';
+            alert.style.opacity = '0';
+            setTimeout(() => alert.remove(), 300);
+        }, 5000);
+    });
+});
+
+// Confirm delete actions
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('delete-btn') && !e.target.closest('form')) {
+        if (!confirm('Are you sure you want to delete this note? This action cannot be undone.')) {
+            e.preventDefault();
+        }
+    }
+});
+
+// Character counter for textareas
+const textareas = document.querySelectorAll('textarea.form-control');
+textareas.forEach(textarea => {
+    const counter = document.createElement('div');
+    counter.className = 'char-counter';
+    counter.style.cssText = 'text-align: right; font-size: 0.875rem; color: #6c757d; margin-top: 0.25rem;';
+    textarea.parentNode.appendChild(counter);
+    
+    function updateCounter() {
+        const length = textarea.value.length;
+        counter.textContent = `${length.toLocaleString()} characters`;
+    }
+    
+    textarea.addEventListener('input', updateCounter);
+    updateCounter();
+});
+
+// Auto-save draft to localStorage
+const noteForm = document.querySelector('form[action*="Create"], form[action*="Edit"]');
+if (noteForm) {
+    const noteNameInput = noteForm.querySelector('input[name="NoteName"]');
+    const contentTextarea = noteForm.querySelector('textarea[name="Content"]');
+    
+    const draftKey = 'note-draft-' + (noteForm.action.includes('Edit') ? 
+        noteForm.querySelector('input[name="NoteId"]')?.value : 'new');
+    
+    // Load draft on page load
+    const draft = localStorage.getItem(draftKey);
+    if (draft && !noteNameInput.value && !contentTextarea.value) {
+        const { noteName, content } = JSON.parse(draft);
+        if (confirm('A draft was found. Would you like to restore it?')) {
+            noteNameInput.value = noteName;
+            contentTextarea.value = content;
+        } else {
+            localStorage.removeItem(draftKey);
+        }
+    }
+    
+    // Save draft on input
+    let saveTimeout;
+    function saveDraft() {
+        clearTimeout(saveTimeout);
+        saveTimeout = setTimeout(() => {
+            const draft = {
+                noteName: noteNameInput.value,
+                content: contentTextarea.value,
+                timestamp: new Date().toISOString()
+            };
+            localStorage.setItem(draftKey, JSON.stringify(draft));
+        }, 1000);
+    }
+    
+    noteNameInput.addEventListener('input', saveDraft);
+    contentTextarea.addEventListener('input', saveDraft);
+    
+    // Clear draft on successful submit
+    noteForm.addEventListener('submit', function() {
+        localStorage.removeItem(draftKey);
+    });
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+    // Ctrl/Cmd + N: New note
+    if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+        const createLink = document.querySelector('a[href*="Create"]');
+        if (createLink) {
+            e.preventDefault();
+            window.location.href = createLink.href;
+        }
+    }
+    
+    // Ctrl/Cmd + F: Focus search
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        const searchInput = document.getElementById('searchInput');
+        if (searchInput) {
+            e.preventDefault();
+            searchInput.focus();
+        }
+    }
+    
+    // ESC: Close modal
+    if (e.key === 'Escape') {
+        const modal = document.querySelector('.modal[style*="display: flex"]');
+        if (modal) {
+            modal.style.display = 'none';
+        }
+    }
+});
+
+// Add animation keyframes
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes slideIn {
+        from {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+        to {
+            transform: translateX(0);
+            opacity: 1;
+        }
+    }
+    
+    @keyframes slideOut {
+        from {
+            transform: translateX(0);
+            opacity: 1;
+        }
+        to {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+    }
+`;
+document.head.appendChild(style);
+
+// Highlight search terms in results
+function highlightSearchTerms(text, searchTerm) {
+    if (!searchTerm) return text;
+    
+    const regex = new RegExp(`(${searchTerm})`, 'gi');
+    return text.replace(regex, '<mark>$1</mark>');
+}
+
+// Export function for future use
+window.NotesApp = {
+    showToast,
+    highlightSearchTerms
+};
+```
+
+---
+
+## 8. Configuration & Startup
+
+### Program.cs
+```csharp
+using Microsoft.EntityFrameworkCore;
+using NotesManager.Data;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container
+builder.Services.AddControllersWithViews();
+
+// Configure SQLite database
+builder.Services.AddDbContext<NotesDbContext>(options =>
+    options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// Register repository
+builder.Services.AddScoped<INotesRepository, NotesRepository>();
+
+var app = builder.Build();
+
+// Create database if it doesn't exist
+using (var scope = app.Services.CreateScope())
+{
+    var context = scope.ServiceProvider.GetRequiredService<NotesDbContext>();
+    context.Database.EnsureCreated();
+}
+
+// Configure the HTTP request pipeline
+if (!app.Environment.IsDevelopment())
+{
+    app.UseExceptionHandler("/Home/Error");
+    app.UseHsts();
+}
+
+app.UseHttpsRedirection();
+app.UseStaticFiles();
+
+app.UseRouting();
+
+app.UseAuthorization();
+
+app.MapControllerRoute(
+    name: "default",
+    pattern: "{controller=Notes}/{action=Index}/{id?}");
+
+app.Run();
+```
+
+### appsettings.json
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Data Source=notes.db"
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*"
+}
+```
+
+---
+
+## 9. Project File
+
+### NotesManager.csproj
+```xml
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="8.0.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Razor.RuntimeCompilation" Version="8.0.0" Condition="'$(Configuration)' == 'Debug'" />
+  </ItemGroup>
+
+</Project>
+```
+
+---
+
+## Implementation Checklist
+
+- [ ] Create ASP.NET MVC project structure
+- [ ] Add required NuGet packages (Entity Framework, SQLite)
+- [ ] Implement Note model with validation attributes
+- [ ] Create NotesDbContext and configure SQLite connection
+- [ ] Implement INotesRepository interface and NotesRepository class
+- [ ] Create NotesController with all CRUD actions
+- [ ] Build Razor views (_Layout, Index, Create, Edit, Details, Delete)
+- [ ] Create CSS stylesheet (style.css)
+- [ ] Implement JavaScript interactivity (app.js)
+- [ ] Configure Program.cs with services and middleware
+- [ ] Set up appsettings.json with connection string
+- [ ] Test all CRUD operations
+- [ ] Test search and sorting functionality
+- [ ] Validate accessibility and responsive design
+- [ ] Run performance tests
+- [ ] Deploy to target environment
+
+---
+
+**Notes:** This implementation provides a complete, production-ready foundation for the Notes Manager application following all specifications from the constitution, specify, plan, and tasks documents. Adjust namespaces, file paths, and configurations as needed for your specific environment.
