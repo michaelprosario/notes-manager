@@ -1,0 +1,75 @@
+Managing text notes efficiently starts with a clear structure. Since you want to focus on naming and organization, these user stories are designed to cover the core lifecycle of a note—from creation to retrieval.
+
+---
+
+## 📝 User Stories: Text Note Management
+
+### 1. Creating and Naming
+
+**As a** user,
+**I want to** assign a specific name to a note when I create it,
+**So that** I can identify the content without having to open the file.
+
+* **Acceptance Criteria:**
+* System prompts for a "Note Title" or "Filename" upon creation.
+* The system prevents saving if the name field is empty.
+* The system warns if a note with the same name already exists.
+
+
+
+### 2. Renaming Existing Notes
+
+**As a** user,
+**I want to** change the name of an existing note,
+**So that** I can update its label as the project or content evolves.
+
+* **Acceptance Criteria:**
+* User can select a "Rename" option from the note settings.
+* The new name is reflected immediately across the application.
+* The original file content remains intact during the rename.
+
+
+
+### 3. Browsing and Sorting
+
+**As a** user,
+**I want to** see a list of all my notes by their names,
+**So that** I can quickly scan and find the information I need.
+
+* **Acceptance Criteria:**
+* Notes are displayed in a searchable list or grid.
+* The UI displays the note name prominently.
+* Users can sort the list alphabetically by name.
+
+
+
+### 4. Searching by Name
+
+**As a** user,
+**I want to** search for a note by typing its name into a search bar,
+**So that** I can jump to a specific file without scrolling.
+
+* **Acceptance Criteria:**
+* The search results update in real-time as the user types.
+* The system highlights matches within the note names.
+
+
+
+---
+
+## Proposed Data Structure
+
+To keep things organized on the backend, you might consider a simple key-value relationship or a structured object:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `note_id` | UUID | Unique identifier for the system. |
+| `note_name` | String | The user-defined name (e.g., "Grocery List"). |
+| `content` | Text | The actual body of the note. |
+| `last_modified` | DateTime | Timestamp for sorting purposes. |
+
+> **Note:** When implementing naming, consider how you'll handle special characters (like `/` or `\`) to ensure compatibility across different operating systems if these notes are saved as local files.
+
+---
+
+Would you like me to draft the **technical requirements** or a **database schema** to support these user stories?
